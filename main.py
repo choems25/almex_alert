@@ -16,7 +16,7 @@ WATCH_LIST = ["AAAU", "BTG", "LNG", "URG", "UEC", "ASM", "NOG"]
 
 MAX_PRICE = 5.0        # $5 미만
 SURGE_RATIO = 2.5      # 1분 내 +2.5% 이상 급등 시
-VOL_MULTIPLIER = 5.0   # 직전 5분 평균 대비 1분 거래량 5배 이상 폭발 시
+VOL_MULTIPLIER = 3.0   # 직전 5분 평균 대비 1분 거래량 3배 이상 폭발 시
 ALERT_COOLDOWN = 120   # 한 종목당 연속 알림 방지 쿨타임 (120초)
 # ============================================================
 
@@ -72,7 +72,7 @@ def on_message(ws, message):
                             last_alert_time[ticker] = now
 
 def on_open(ws):
-    print("⚡ AMEX 실시간 웹소켓 감시 시작완료! (거래량 5배 + 1분 2.5% 급등 조건)")
+    print("⚡ AMEX 실시간 웹소켓 감시 시작완료! (거래량 3배 + 1분 2.5% 급등 조건)")
     for ticker in WATCH_LIST:
         ws.send(json.dumps({'type': 'subscribe', 'symbol': ticker}))
 
