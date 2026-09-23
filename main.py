@@ -75,7 +75,7 @@ def fetch_smart_watchlist():
         if not ticker or '.' in ticker or '^' in ticker or len(ticker) > 5:
             continue
             
-        if count >= 200:  # 테스트를 위해 우선 200개만 빠르게 스캔하도록 조정
+        if count >= 200:  
             break
             
         try:
@@ -127,7 +127,8 @@ def fetch_smart_watchlist():
 
     print(f"[{time.strftime('%H:%M:%S')}] ✨ 최종 선별된 종목: {final_50}")
     
-    list_msg = f"📋 *[스마트 와치리스트]*\n" + ", ".join(final_50)
+    # 📋 텔레그램으로 선별된 50개 종목 리스트 전송
+    list_msg = f"📋 *[오늘의 스마트 와치리스트 50선]*\n" + ", ".join(final_50)
     send_telegram(list_msg)
     
     return final_50
@@ -166,7 +167,7 @@ def on_message(ws, message):
                                 
                                 if (change_pct >= SURGE_RATIO) and (vol_spike_ratio >= VOL_MULTIPLIER) and (now - last_alert_time[ticker] > ALERT_COOLDOWN):
                                     alert_msg = (
-                                        f"🚨 *[소형주 폭등 감지!]*\n"
+                                        f"🚨 *[핵심 테마 바닥권 소형주 폭등!]*\n"
                                         f"• 종목: *{ticker}*\n"
                                         f"• 현재가: *${price:.2f}* (1분간 +{change_pct:.1f}%)\n"
                                         f"• 거래량: *{vol_1m:,}주* (평소 대비 *{vol_spike_ratio:.1f}배* 폭증 🔥)\n"
@@ -198,18 +199,29 @@ def run_websocket():
             print(f"웹소켓 연결 끊김, 5초 후 재연결: {e}")
             time.sleep(5)
 
+# ==================== [HTTP 가짜 서버 (501 에러 해결)] ====================
+class SimpleHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Quant Bot is running!")
+        
+    def log_message(self, format, *args):
+        return  # 불필요한 접속 로그 출력을 막아줍니다
+
 def run_dummy_server():
     port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(('0.0.0.0', port), BaseHTTPRequestHandler)
+    server = HTTPServer(('0.0.0.0', port), SimpleHandler)
     server.serve_forever()
 
 if __name__ == "__main__":
     print("🚀 퀀트 모니터링 시스템 부팅 중...")
     
-    # 1. 렌더 생존용 서버 구동
+    # 1. 렌더 생존용 서버 구동 (GET 요청 200 OK 처리)
     threading.Thread(target=run_dummy_server, daemon=True).start()
     
-    # 2. 초기 와치리스트 빌드
+    # 2. 초기 와치리스트 빌드 및 텔레그램 리스트 전송
     initial_list = fetch_smart_watchlist()
     with watchlist_lock:
         active_watch_list = initial_list
