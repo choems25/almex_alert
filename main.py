@@ -45,9 +45,26 @@ def send_telegram(msg):
     except Exception as e:
         print(f"알림 전송 실패: {e}")
 
-# ==================== [초효율 스마트 스크리너 (500개 캡 + 잡동사니 차단)] ====================
+# ==================== [429 방어벽 포함 안전 API 요청 함수] ====================
+def safe_get(url, max_retries=3):
+    """핀허브 429 에러(Rate Limit) 방어를 위한 안전 요청 래퍼"""
+    for attempt in range(max_retries):
+        try:
+            res = requests.get(url, timeout=3)
+            if res.status_code == 429:
+                print(f"[⚠️ 경고] 핀허브 API 호출 제한(429) 도달! 10초간 숨 고르기 중...")
+                time.sleep(10)
+                continue
+            return res
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise e
+            time.sleep(2)
+    return None
+
+# ==================== [철통방어 스마트 스크리너 (500개 캡 + 잡동사니 차단)] ====================
 def fetch_smart_watchlist():
-    print(f"[{time.strftime('%H:%M:%S')}] 🔍 [스마트 스크리너] 500개 샘플링 및 잡동사니 차단 필터 가동...")
+    print(f"[{time.strftime('%H:%M:%S')}] 🔍 [스마트 스크리너] 500개 샘플링 및 잡동사니 차단 필터 가동 (429 방어탑재)...")
     
     if not FINNHUB_TOKEN:
         print("[에러] FINNHUB_API_KEY 환경 변수가 설정되지 않았습니다!")
@@ -55,7 +72,9 @@ def fetch_smart_watchlist():
 
     url = f"https://finnhub.io/api/v1/stock/symbol?exchange=US&token={FINNHUB_TOKEN}"
     try:
-        res = requests.get(url, timeout=15)
+        res = safe_get(url)
+        if not res:
+            return ["IPDN", "BTG", "LNG", "URG", "UEC", "ASM", "NOG", "AAAU"]
         symbols_data = res.json()
         if isinstance(symbols_data, dict) and 'error' in symbols_data:
             print(f"[핀허브 API 에러]: {symbols_data['error']}")
@@ -74,7 +93,7 @@ def fetch_smart_watchlist():
     from_ts = to_ts - (30 * 86400)
 
     scanned_count = 0
-    max_scan_limit = 500  # 밴 위험 없는 가장 안전한 500개 한계선 설정
+    max_scan_limit = 500  # 안전한 500개 한계선
 
     for item in symbols_data:
         if scanned_count >= max_scan_limit:
@@ -95,42 +114,47 @@ def fetch_smart_watchlist():
         scanned_count += 1
         
         try:
-            # [1단계] 가격 필터 우선 검증 (비용 절약: 범위 안 맞으면 즉시 탈락)
+            # [1단계] 가격 필터 우선 검증 (비용 절약)
             quote_url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_TOKEN}"
-            q_res = requests.get(quote_url, timeout=2).json()
-            price = q_res.get('c', 0)
-            time.sleep(0.05) # 밴 방지 미세 딜레이
+            q_res = safe_get(quote_url)
+            if not q_res:
+                continue
+            q_data = q_res.json()
+            price = q_data.get('c', 0)
+            time.sleep(0.06) # 안전한 딜레이
             
             if not price or not (MIN_PRICE <= price < MAX_PRICE):
                 continue
                 
             # [2단계] 30일 폭등(설거지) 이력 검증
             candle_url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution=D&from={from_ts}&to={to_ts}&token={FINNHUB_TOKEN}"
-            c_res = requests.get(candle_url, timeout=2).json()
-            time.sleep(0.05)
-            
-            if c_res.get('s') == 'ok':
-                lows = c_res.get('l', [])
-                highs = c_res.get('h', [])
-                if lows and highs:
-                    min_low = min(lows)
-                    max_high = max(highs)
-                    if min_low > 0 and (max_high - min_low) / min_low >= 0.5:
-                        continue  # 30일 내 50% 이상 급등 이력 있으면 탈락
+            c_res = safe_get(candle_url)
+            if c_res:
+                c_data = c_res.json()
+                if c_data.get('s') == 'ok':
+                    lows = c_data.get('l', [])
+                    highs = c_data.get('h', [])
+                    if lows and highs:
+                        min_low = min(lows)
+                        max_high = max(highs)
+                        if min_low > 0 and (max_high - min_low) / min_low >= 0.5:
+                            continue  # 30일 내 50% 이상 급등 이력 있으면 탈락
+            time.sleep(0.06)
 
             # [3단계] 테마 분류 (7대 테마 vs 일반 소형주)
             profile_url = f"https://finnhub.io/api/v1/stock/profile2?symbol={ticker}&token={FINNHUB_TOKEN}"
-            p_res = requests.get(profile_url, timeout=2).json()
-            industry = p_res.get('finnhubIndustry', '')
-            time.sleep(0.05)
-            
-            is_favorite = any(sec.lower() in industry.lower() for sec in FAVORITE_SECTORS)
-            
-            if is_favorite:
-                prioritized_list.append(ticker)
-            else:
-                general_list.append(ticker)
+            p_res = safe_get(profile_url)
+            if p_res:
+                p_data = p_res.json()
+                industry = p_data.get('finnhubIndustry', '')
+                is_favorite = any(sec.lower() in industry.lower() for sec in FAVORITE_SECTORS)
                 
+                if is_favorite:
+                    prioritized_list.append(ticker)
+                else:
+                    general_list.append(ticker)
+            time.sleep(0.06)
+            
             # 50개가 채워지면 탐색 조기 종료
             if len(prioritized_list) + len(general_list) >= 50:
                 break
@@ -148,7 +172,7 @@ def fetch_smart_watchlist():
 
     print(f"[{time.strftime('%H:%M:%S')}] ✨ 최종 선별된 50선 완료 (총 검사한 순수 주식 수: {scanned_count}개): {final_50}")
     
-    list_msg = f"📋 *[스마트 와치리스트 50선 (잡동사니 차단 완료)]*\n" + ", ".join(final_50)
+    list_msg = f"📋 *[스마트 와치리스트 50선 (429 방어 적용 완료)]*\n" + ", ".join(final_50)
     send_telegram(list_msg)
     
     return final_50
