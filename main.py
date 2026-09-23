@@ -84,13 +84,11 @@ def run():
     )
     ws.run_forever()
 
-# Render 포트 검사를 속이기 위한 가짜 웹서버 함수
+# Render 포트 감지용 가짜 웹서버 (10000 포트 연결)
 def run_dummy_server():
     server = HTTPServer(('0.0.0.0', 10000), BaseHTTPRequestHandler)
     server.serve_forever()
 
 if __name__ == "__main__":
-    # 가짜 서버를 배경에서 실행
     threading.Thread(target=run_dummy_server, daemon=True).start()
-    # 주식 감시 로직 실행
     run()
