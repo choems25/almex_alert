@@ -6,7 +6,6 @@ import time
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import os
-from datetime import datetime, timedelta
 
 # ==================== [설정 영역] ====================
 FINNHUB_TOKEN = os.environ.get("FINNHUB_API_KEY", "dapr4a9r01qqnrhtp010dapr4a9r01qqnrhtp01g")
@@ -89,10 +88,9 @@ def fetch_smart_watchlist():
                 if lows and highs:
                     min_low = min(lows)
                     max_high = max(highs)
-                    # 30일 내 최저점 대비 최고점이 50% 이상(+50% 이상 슈팅) 올랐던 적이 있다면 제외!
                     if min_low > 0 and (max_high - min_low) / min_low >= 0.5:
                         time.sleep(0.04)
-                        continue # 폭등 이력 있으므로 패스!
+                        continue # 폭등 이력 있으므로 제외!
 
             # 3. 기업 프로필(섹터) 확인
             profile_url = f"https://finnhub.io/api/v1/stock/profile2?symbol={ticker}&token={FINNHUB_TOKEN}"
@@ -121,6 +119,11 @@ def fetch_smart_watchlist():
         final_50 = ["IPDN", "BTG", "LNG", "URG", "UEC", "ASM", "NOG", "AAAU", "DNN", "UAMY"]
 
     print(f"[{time.strftime('%H:%M:%S')}] ✨ 최종 선별된 50개 종목 (폭등 제외 완료): {final_50}")
+    
+    # 📋 텔레그램으로 선별된 50개 종목 리스트 전송
+    list_msg = f"📋 *[오늘의 스마트 와치리스트 50선]*\n" + ", ".join(final_50)
+    send_telegram(list_msg)
+    
     return final_50
 
 # ==================== [웹소켓 실시간 감시 엔진] ====================
@@ -195,7 +198,7 @@ if __name__ == "__main__":
     # 1. 렌더 생존용 서버 구동
     threading.Thread(target=run_dummy_server, daemon=True).start()
     
-    # 2. 초기 와치리스트 빌드 (30일 50% 폭등 제외 + 7대 테마 우선)
+    # 2. 초기 와치리스트 빌드 및 텔레그램 리스트 전송
     initial_list = fetch_smart_watchlist()
     with watchlist_lock:
         active_watch_list = initial_list
