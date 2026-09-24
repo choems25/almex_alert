@@ -62,117 +62,134 @@ def safe_get(url, max_retries=3):
             time.sleep(2)
     return None
 
-# ==================== [철통방어 스마트 스크리너 (500개 캡 + 잡동사니 차단)] ====================
+# ==================== [스마트 스크리너 (장외주식/ETF/스팩 완벽 차단 + 35개 미만 시 1분 대기)] ====================
 def fetch_smart_watchlist():
-    print(f"[{time.strftime('%H:%M:%S')}] 🔍 [스마트 스크리너] 500개 샘플링 및 잡동사니 차단 필터 가동 (429 방어탑재)...")
+    max_attempts = 3  # 최대 재시도 횟수
+    final_50 = []
     
-    if not FINNHUB_TOKEN:
-        print("[에러] FINNHUB_API_KEY 환경 변수가 설정되지 않았습니다!")
-        return ["IPDN", "BTG", "LNG", "URG", "UEC", "ASM", "NOG", "AAAU"]
-
-    url = f"https://finnhub.io/api/v1/stock/symbol?exchange=US&token={FINNHUB_TOKEN}"
-    try:
-        res = safe_get(url)
-        if not res:
-            return ["IPDN", "BTG", "LNG", "URG", "UEC", "ASM", "NOG", "AAAU"]
-        symbols_data = res.json()
-        if isinstance(symbols_data, dict) and 'error' in symbols_data:
-            print(f"[핀허브 API 에러]: {symbols_data['error']}")
-            return ["IPDN", "BTG", "LNG", "URG", "UEC", "ASM", "NOG", "AAAU"]
-    except Exception as e:
-        print(f"심볼 조회 중 예외 발생: {e}")
-        return ["IPDN", "BTG", "LNG", "URG", "UEC", "ASM", "NOG", "AAAU"]
-
-    # 1. 시장 전체 무작위 셔플 (A~Z 편향 방지)
-    random.shuffle(symbols_data)
-
-    prioritized_list = []  # 7대 테마 알짜 종목
-    general_list = []      # 일반 안전 소형주
-
-    to_ts = int(time.time())
-    from_ts = to_ts - (30 * 86400)
-
-    scanned_count = 0
-    max_scan_limit = 500  # 안전한 500개 한계선
-
-    for item in symbols_data:
-        if scanned_count >= max_scan_limit:
-            break
-            
-        ticker = item.get('symbol')
-        description = item.get('description', '').lower()
+    for attempt in range(1, max_attempts + 1):
+        print(f"[{time.strftime('%H:%M:%S')}] 🔍 [스마트 스크리너] 시도 #{attempt} (500개 샘플링 및 잡주/장외주식 차단 가동)...")
         
-        # 기본 티커 검증
-        if not ticker or '.' in ticker or '^' in ticker or len(ticker) > 5:
-            continue
-            
-        # [잡동사니 원천 차단 필터] ETF, 스팩, 펀드, 우선주, 워런트 등 이름 기반 제외
-        exclude_keywords = ['etf', 'fund', 'trust', 'index', 'acquisition', 'blank check', 'preferred', 'warrant', 'notes']
-        if any(keyword in description for keyword in exclude_keywords):
-            continue  
-            
-        scanned_count += 1
-        
+        if not FINNHUB_TOKEN:
+            print("[에러] FINNHUB_API_KEY 환경 변수가 설정되지 않았습니다!")
+            return ["IPDN", "BTG", "LNG", "URG", "UEC", "ASM", "NOG", "AAAU"]
+
+        url = f"https://finnhub.io/api/v1/stock/symbol?exchange=US&token={FINNHUB_TOKEN}"
         try:
-            # [1단계] 가격 필터 우선 검증 (비용 절약)
-            quote_url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_TOKEN}"
-            q_res = safe_get(quote_url)
-            if not q_res:
+            res = safe_get(url)
+            if not res:
+                time.sleep(10)
                 continue
-            q_data = q_res.json()
-            price = q_data.get('c', 0)
-            time.sleep(0.06) # 안전한 딜레이
-            
-            if not price or not (MIN_PRICE <= price < MAX_PRICE):
+            symbols_data = res.json()
+            if isinstance(symbols_data, dict) and 'error' in symbols_data:
+                print(f"[핀허브 API 에러]: {symbols_data['error']}")
+                time.sleep(10)
                 continue
-                
-            # [2단계] 30일 폭등(설거지) 이력 검증
-            candle_url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution=D&from={from_ts}&to={to_ts}&token={FINNHUB_TOKEN}"
-            c_res = safe_get(candle_url)
-            if c_res:
-                c_data = c_res.json()
-                if c_data.get('s') == 'ok':
-                    lows = c_data.get('l', [])
-                    highs = c_data.get('h', [])
-                    if lows and highs:
-                        min_low = min(lows)
-                        max_high = max(highs)
-                        if min_low > 0 and (max_high - min_low) / min_low >= 0.5:
-                            continue  # 30일 내 50% 이상 급등 이력 있으면 탈락
-            time.sleep(0.06)
+        except Exception as e:
+            print(f"심볼 조회 중 예외 발생: {e}")
+            time.sleep(10)
+            continue
 
-            # [3단계] 테마 분류 (7대 테마 vs 일반 소형주)
-            profile_url = f"https://finnhub.io/api/v1/stock/profile2?symbol={ticker}&token={FINNHUB_TOKEN}"
-            p_res = safe_get(profile_url)
-            if p_res:
-                p_data = p_res.json()
-                industry = p_data.get('finnhubIndustry', '')
-                is_favorite = any(sec.lower() in industry.lower() for sec in FAVORITE_SECTORS)
-                
-                if is_favorite:
-                    prioritized_list.append(ticker)
-                else:
-                    general_list.append(ticker)
-            time.sleep(0.06)
-            
-            # 50개가 채워지면 탐색 조기 종료
-            if len(prioritized_list) + len(general_list) >= 50:
+        # 1. 시장 전체 무작위 셔플
+        random.shuffle(symbols_data)
+
+        prioritized_list = []
+        general_list = []
+
+        to_ts = int(time.time())
+        from_ts = to_ts - (30 * 86400)
+
+        scanned_count = 0
+        max_scan_limit = 500
+
+        for item in symbols_data:
+            if scanned_count >= max_scan_limit:
                 break
                 
-        except Exception:
-            continue
+            ticker = item.get('symbol')
+            description = item.get('description', '').lower()
+            
+            if not ticker or '.' in ticker or '^' in ticker or len(ticker) > 5:
+                continue
+                
+            # [잡동사니 + 장외주식(OTC) 완벽 차단 필터]
+            exclude_keywords = [
+                'etf', 'fund', 'trust', 'index', 'acquisition', 'blank check', 
+                'preferred', 'warrant', 'notes', 'otc', 'pink', 'over-the-counter'
+            ]
+            if any(keyword in description for keyword in exclude_keywords):
+                continue  
+                
+            scanned_count += 1
+            
+            try:
+                # [1단계] 가격 필터
+                quote_url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_TOKEN}"
+                q_res = safe_get(quote_url)
+                if not q_res:
+                    continue
+                price = q_res.json().get('c', 0)
+                time.sleep(0.06)
+                
+                if not price or not (MIN_PRICE <= price < MAX_PRICE):
+                    continue
+                    
+                # [2단계] 30일 폭등(설거지) 이력 검증
+                candle_url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution=D&from={from_ts}&to={to_ts}&token={FINNHUB_TOKEN}"
+                c_res = safe_get(candle_url)
+                if c_res:
+                    c_data = c_res.json()
+                    if c_data.get('s') == 'ok':
+                        lows = c_data.get('l', [])
+                        highs = c_data.get('h', [])
+                        if lows and highs:
+                            min_low = min(lows)
+                            max_high = max(highs)
+                            if min_low > 0 and (max_high - min_low) / min_low >= 0.5:
+                                continue
+                time.sleep(0.06)
 
-    # 우선순위 테마 먼저 담고, 모자란 자리는 일반 안전 소형주로 채워서 50개 완성
-    combined = prioritized_list + general_list
-    final_50 = combined[:50]
-    
-    # 예비 방어벽
+                # [3단계] 테마 분류
+                profile_url = f"https://finnhub.io/api/v1/stock/profile2?symbol={ticker}&token={FINNHUB_TOKEN}"
+                p_res = safe_get(profile_url)
+                if p_res:
+                    industry = p_res.json().get('finnhubIndustry', '')
+                    is_favorite = any(sec.lower() in industry.lower() for sec in FAVORITE_SECTORS)
+                    
+                    if is_favorite:
+                        prioritized_list.append(ticker)
+                    else:
+                        general_list.append(ticker)
+                time.sleep(0.06)
+                
+                if len(prioritized_list) + len(general_list) >= 50:
+                    break
+                    
+            except Exception:
+                continue
+
+        combined = prioritized_list + general_list
+        final_50 = combined[:50]
+        
+        # 🎯 조건 체크: 35개 이상 모았는가?
+        if len(final_50) >= 35:
+            print(f"[{time.strftime('%H:%M:%S')}] ✨ 충분한 우량 종목 확보 성공! ({len(final_50)}개 수집 완료)")
+            break
+        else:
+            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ 수집된 종목이 {len(final_50)}개로 너무 적습니다 (35개 미만).")
+            if attempt < max_attempts:
+                print(f"[{time.strftime('%H:%M:%S')}] ⏱️ 핀허브 보호 및 재정비를 위해 **1분간 안전하게 휴식** 후 처음부터 다시 시도합니다...")
+                time.sleep(60) # 1분 대기
+            else:
+                print(f"[{time.strftime('%H:%M:%S')}] 🚨 최대 재시도 횟수({max_attempts}회) 도달. 현재 확보된 {len(final_50)}개로 모니터링을 시작합니다.")
+
+    # 최후의 방어벽
     if len(final_50) < 5:
         final_50 = ["IPDN", "BTG", "LNG", "URG", "UEC", "ASM", "NOG", "AAAU", "DNN", "UAMY"]
 
-    print(f"[{time.strftime('%H:%M:%S')}] ✨ 최종 선별된 50선 완료 (총 검사한 순수 주식 수: {scanned_count}개): {final_50}")
+    print(f"[{time.strftime('%H:%M:%S')}] 📋 최종 확정된 감시 대상: {final_50}")
     
-    list_msg = f"📋 *[스마트 와치리스트 50선 (429 방어 적용 완료)]*\n" + ", ".join(final_50)
+    list_msg = f"📋 *[스마트 와치리스트 확정 완료 (장외주식 제외)]*\n" + ", ".join(final_50)
     send_telegram(list_msg)
     
     return final_50
@@ -265,7 +282,7 @@ if __name__ == "__main__":
     # 1. 렌더 생존용 서버 구동
     threading.Thread(target=run_dummy_server, daemon=True).start()
     
-    # 2. 500개 샘플 기반 스마트 스크리너 구동 및 텔레그램 전송
+    # 2. 스마트 스크리너 구동 (장외주식 차단 및 35개 미만 시 1분 대기 재시도 포함)
     initial_list = fetch_smart_watchlist()
     with watchlist_lock:
         active_watch_list = initial_list
