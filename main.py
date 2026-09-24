@@ -62,13 +62,13 @@ def safe_get(url, max_retries=3):
             time.sleep(2)
     return None
 
-# ==================== [스마트 스크리너 (장외주식/ETF/스팩 완벽 차단 + 35개 미만 시 1분 대기)] ====================
+# ==================== [스마트 스크리너 (5글자 소형주 허용 + 장외/스팩 박멸)] ====================
 def fetch_smart_watchlist():
-    max_attempts = 3  # 최대 재시도 횟수
+    max_attempts = 3  
     final_50 = []
     
     for attempt in range(1, max_attempts + 1):
-        print(f"[{time.strftime('%H:%M:%S')}] 🔍 [스마트 스크리너] 시도 #{attempt} (500개 샘플링 및 잡주/장외주식 차단 가동)...")
+        print(f"[{time.strftime('%H:%M:%S')}] 🔍 [스마트 스크리너] 시도 #{attempt} (5글자 소형주 허용 및 장외/스팩 필터 가동)...")
         
         if not FINNHUB_TOKEN:
             print("[에러] FINNHUB_API_KEY 환경 변수가 설정되지 않았습니다!")
@@ -90,7 +90,6 @@ def fetch_smart_watchlist():
             time.sleep(10)
             continue
 
-        # 1. 시장 전체 무작위 셔플
         random.shuffle(symbols_data)
 
         prioritized_list = []
@@ -100,22 +99,30 @@ def fetch_smart_watchlist():
         from_ts = to_ts - (30 * 86400)
 
         scanned_count = 0
-        max_scan_limit = 500
+        max_scan_limit = 600
 
         for item in symbols_data:
             if scanned_count >= max_scan_limit:
                 break
                 
-            ticker = item.get('symbol')
+            ticker = item.get('symbol', '').strip()
             description = item.get('description', '').lower()
             
-            if not ticker or '.' in ticker or '^' in ticker or len(ticker) > 5:
+            # [1차 방어벽: 티커 규칙]
+            # - 특수문자(., ^, +) 포함 종목 차단
+            # - 장외/해외 연계형 '-F'로 끝나는 티커 차단 (5글자 이상이라도 정규장 주식은 허용)
+            # - 워런트 종목(.W 또는 W로 끝나는 특수 케이스) 차단
+            if not ticker or '.' in ticker or '^' in ticker or '+' in ticker:
+                continue
+            if ticker.endswith('F') or ticker.endswith('W') or ticker.endswith('.W'):
                 continue
                 
-            # [잡동사니 + 장외주식(OTC) 완벽 차단 필터]
+            # [2차 방어벽: 설명(Description) 키워드로 장외주식 + 스팩 + 잡주 완벽 박멸]
             exclude_keywords = [
-                'etf', 'fund', 'trust', 'index', 'acquisition', 'blank check', 
-                'preferred', 'warrant', 'notes', 'otc', 'pink', 'over-the-counter'
+                'etf', 'fund', 'trust', 'index', 'preferred', 'notes', 
+                'otc', 'pink', 'over-the-counter', 'adr',
+                'acquisition', 'blank check', 'spac', 'merger', 
+                'capital corp', 'class a', 'unit', 'warrant'
             ]
             if any(keyword in description for keyword in exclude_keywords):
                 continue  
@@ -129,7 +136,7 @@ def fetch_smart_watchlist():
                 if not q_res:
                     continue
                 price = q_res.json().get('c', 0)
-                time.sleep(0.06)
+                time.sleep(0.05)
                 
                 if not price or not (MIN_PRICE <= price < MAX_PRICE):
                     continue
@@ -147,7 +154,7 @@ def fetch_smart_watchlist():
                             max_high = max(highs)
                             if min_low > 0 and (max_high - min_low) / min_low >= 0.5:
                                 continue
-                time.sleep(0.06)
+                time.sleep(0.05)
 
                 # [3단계] 테마 분류
                 profile_url = f"https://finnhub.io/api/v1/stock/profile2?symbol={ticker}&token={FINNHUB_TOKEN}"
@@ -160,7 +167,7 @@ def fetch_smart_watchlist():
                         prioritized_list.append(ticker)
                     else:
                         general_list.append(ticker)
-                time.sleep(0.06)
+                time.sleep(0.05)
                 
                 if len(prioritized_list) + len(general_list) >= 50:
                     break
@@ -171,25 +178,23 @@ def fetch_smart_watchlist():
         combined = prioritized_list + general_list
         final_50 = combined[:50]
         
-        # 🎯 조건 체크: 35개 이상 모았는가?
         if len(final_50) >= 35:
-            print(f"[{time.strftime('%H:%M:%S')}] ✨ 충분한 우량 종목 확보 성공! ({len(final_50)}개 수집 완료)")
+            print(f"[{time.strftime('%H:%M:%S')}] ✨ 정규장 알짜배기 종목(5글자 포함) 확보 성공! ({len(final_50)}개)")
             break
         else:
-            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ 수집된 종목이 {len(final_50)}개로 너무 적습니다 (35개 미만).")
+            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ 수집된 종목이 {len(final_50)}개로 부족합니다.")
             if attempt < max_attempts:
-                print(f"[{time.strftime('%H:%M:%S')}] ⏱️ 핀허브 보호 및 재정비를 위해 **1분간 안전하게 휴식** 후 처음부터 다시 시도합니다...")
-                time.sleep(60) # 1분 대기
+                print(f"[{time.strftime('%H:%M:%S')}] ⏱️ 1분간 안전하게 휴식 후 재시도합니다...")
+                time.sleep(60)
             else:
-                print(f"[{time.strftime('%H:%M:%S')}] 🚨 최대 재시도 횟수({max_attempts}회) 도달. 현재 확보된 {len(final_50)}개로 모니터링을 시작합니다.")
+                print(f"[{time.strftime('%H:%M:%S')}] 🚨 최대 재시도 도달. 현재 확보된 {len(final_50)}개로 시작합니다.")
 
-    # 최후의 방어벽
     if len(final_50) < 5:
-        final_50 = ["IPDN", "BTG", "LNG", "URG", "UEC", "ASM", "NOG", "AAAU", "DNN", "UAMY"]
+        final_50 = ["IPDN", "BTG", "LNG", "URG", "UEC", "ASM", "NOG", "AAAU"]
 
-    print(f"[{time.strftime('%H:%M:%S')}] 📋 최종 확정된 감시 대상: {final_50}")
+    print(f"[{time.strftime('%H:%M:%S')}] 📋 최종 확정된 클린 와치리스트: {final_50}")
     
-    list_msg = f"📋 *[스마트 와치리스트 확정 완료 (장외주식 제외)]*\n" + ", ".join(final_50)
+    list_msg = f"📋 *[스마트 와치리스트 확정 (5글자 허용 / 장외·스팩 차단증명)]*\n" + ", ".join(final_50)
     send_telegram(list_msg)
     
     return final_50
@@ -279,10 +284,8 @@ def run_dummy_server():
 if __name__ == "__main__":
     print("🚀 퀀트 모니터링 시스템 부팅 중...")
     
-    # 1. 렌더 생존용 서버 구동
     threading.Thread(target=run_dummy_server, daemon=True).start()
     
-    # 2. 스마트 스크리너 구동 (장외주식 차단 및 35개 미만 시 1분 대기 재시도 포함)
     initial_list = fetch_smart_watchlist()
     with watchlist_lock:
         active_watch_list = initial_list
@@ -290,5 +293,4 @@ if __name__ == "__main__":
             history_data[t] = deque()
             last_alert_time[t] = 0
 
-    # 3. 메인 웹소켓 실행
     run_websocket()
