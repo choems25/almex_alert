@@ -294,7 +294,7 @@ def run_websocket():
             print(f"웹소켓 연결 끊김, 5초 후 재연결: {e}")
             time.sleep(5)
 
-# ==================== [HTTP 가짜 서버 (Render 생존용)] ====================
+# ==================== [HTTP 가짜 서버 (Render 및 UptimeRobot 생존용)] ====================
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -302,6 +302,11 @@ class SimpleHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Quant Bot is running!")
         
+    def do_HEAD(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+
     def log_message(self, format, *args):
         return
 
@@ -313,7 +318,7 @@ def run_dummy_server():
 if __name__ == "__main__":
     print("🚀 퀀트 모니터링 시스템 부팅 중...")
     
-    # 1. 렌더 생존용 서버 구동
+    # 1. 렌더 및 UptimeRobot 생존용 웹서버 구동
     threading.Thread(target=run_dummy_server, daemon=True).start()
     
     # 2. 첫 와치리스트 초기 수집
