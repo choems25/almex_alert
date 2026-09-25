@@ -32,6 +32,7 @@ active_watch_list = []
 watchlist_lock = threading.Lock()
 history_data = {}
 last_alert_time = {}
+ws_app_global = None  # 웹소켓 객체 실시간 동적 제어용
 
 def send_telegram(msg):
     if not TELEGRAM_TOKEN or not CHAT_ID:
@@ -62,13 +63,13 @@ def safe_get(url, max_retries=3):
             time.sleep(2)
     return None
 
-# ==================== [스마트 스크리너 (5글자 소형주 허용 + 장외/스팩 박멸)] ====================
+# ==================== [스마트 스크리너] ====================
 def fetch_smart_watchlist():
     max_attempts = 3  
     final_50 = []
     
     for attempt in range(1, max_attempts + 1):
-        print(f"[{time.strftime('%H:%M:%S')}] 🔍 [스마트 스크리너] 시도 #{attempt} (5글자 소형주 허용 및 장외/스팩 필터 가동)...")
+        print(f"[{time.strftime('%H:%M:%S')}] 🔍 [스마트 스크리너] 시도 #{attempt} (클린 와치리스트 수집 중...)")
         
         if not FINNHUB_TOKEN:
             print("[에러] FINNHUB_API_KEY 환경 변수가 설정되지 않았습니다!")
@@ -108,16 +109,11 @@ def fetch_smart_watchlist():
             ticker = item.get('symbol', '').strip()
             description = item.get('description', '').lower()
             
-            # [1차 방어벽: 티커 규칙]
-            # - 특수문자(., ^, +) 포함 종목 차단
-            # - 장외/해외 연계형 '-F'로 끝나는 티커 차단 (5글자 이상이라도 정규장 주식은 허용)
-            # - 워런트 종목(.W 또는 W로 끝나는 특수 케이스) 차단
             if not ticker or '.' in ticker or '^' in ticker or '+' in ticker:
                 continue
             if ticker.endswith('F') or ticker.endswith('W') or ticker.endswith('.W'):
                 continue
                 
-            # [2차 방어벽: 설명(Description) 키워드로 장외주식 + 스팩 + 잡주 완벽 박멸]
             exclude_keywords = [
                 'etf', 'fund', 'trust', 'index', 'preferred', 'notes', 
                 'otc', 'pink', 'over-the-counter', 'adr',
@@ -130,7 +126,6 @@ def fetch_smart_watchlist():
             scanned_count += 1
             
             try:
-                # [1단계] 가격 필터
                 quote_url = f"https://finnhub.io/api/v1/quote?symbol={ticker}&token={FINNHUB_TOKEN}"
                 q_res = safe_get(quote_url)
                 if not q_res:
@@ -141,7 +136,6 @@ def fetch_smart_watchlist():
                 if not price or not (MIN_PRICE <= price < MAX_PRICE):
                     continue
                     
-                # [2단계] 30일 폭등(설거지) 이력 검증
                 candle_url = f"https://finnhub.io/api/v1/stock/candle?symbol={ticker}&resolution=D&from={from_ts}&to={to_ts}&token={FINNHUB_TOKEN}"
                 c_res = safe_get(candle_url)
                 if c_res:
@@ -156,7 +150,6 @@ def fetch_smart_watchlist():
                                 continue
                 time.sleep(0.05)
 
-                # [3단계] 테마 분류
                 profile_url = f"https://finnhub.io/api/v1/stock/profile2?symbol={ticker}&token={FINNHUB_TOKEN}"
                 p_res = safe_get(profile_url)
                 if p_res:
@@ -179,25 +172,59 @@ def fetch_smart_watchlist():
         final_50 = combined[:50]
         
         if len(final_50) >= 35:
-            print(f"[{time.strftime('%H:%M:%S')}] ✨ 정규장 알짜배기 종목(5글자 포함) 확보 성공! ({len(final_50)}개)")
+            print(f"[{time.strftime('%H:%M:%S')}] ✨ 클린 와치리스트 확보 성공! ({len(final_50)}개)")
             break
         else:
-            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ 수집된 종목이 {len(final_50)}개로 부족합니다.")
+            print(f"[{time.strftime('%H:%M:%S')}] ⚠️ 수집된 종목이 {len(final_50)}개로 부족합니다. 1분 후 재시도...")
             if attempt < max_attempts:
-                print(f"[{time.strftime('%H:%M:%S')}] ⏱️ 1분간 안전하게 휴식 후 재시도합니다...")
                 time.sleep(60)
             else:
-                print(f"[{time.strftime('%H:%M:%S')}] 🚨 최대 재시도 도달. 현재 확보된 {len(final_50)}개로 시작합니다.")
+                print(f"[{time.strftime('%H:%M:%S')}] 🚨 최대 재시도 도달. 현재 확보된 {len(final_50)}개로 진행합니다.")
 
     if len(final_50) < 5:
         final_50 = ["IPDN", "BTG", "LNG", "URG", "UEC", "ASM", "NOG", "AAAU"]
 
-    print(f"[{time.strftime('%H:%M:%S')}] 📋 최종 확정된 클린 와치리스트: {final_50}")
+    print(f"[{time.strftime('%H:%M:%S')}] 📋 최종 확정된 감시 대상: {final_50}")
     
-    list_msg = f"📋 *[스마트 와치리스트 확정 (5글자 허용 / 장외·스팩 차단증명)]*\n" + ", ".join(final_50)
+    list_msg = f"📋 *[일일 스마트 와치리스트 갱신 완료]*\n" + ", ".join(final_50)
     send_telegram(list_msg)
     
     return final_50
+
+# ==================== [매일 자동 갱신 스케줄러 백그라운드 쓰레드] ====================
+def daily_watchlist_scheduler():
+    global active_watch_list, history_data, last_alert_time, ws_app_global
+    while True:
+        # 24시간(86400초)마다 하루에 한 번씩 와치리스트 새로고침 수행
+        time.sleep(86400)
+        print(f"[{time.strftime('%H:%M:%S')}] ⏰ [일일 스케줄러] 새로운 장 마감/기준 시간에 맞춰 와치리스트를 재조정합니다...")
+        
+        new_list = fetch_smart_watchlist()
+        
+        with watchlist_lock:
+            old_set = set(active_watch_list)
+            new_set = set(new_list)
+            
+            # 웹소켓 연결이 살아있다면 구독 변경 반영
+            if ws_app_global:
+                # 안 쓰게 된 종목 구독 취소
+                for t in old_set - new_set:
+                    try:
+                        ws_app_global.send(json.dumps({'type': 'unsubscribe', 'symbol': t}))
+                    except Exception:
+                        pass
+                # 새로 들어온 종목 구독 추가
+                for t in new_set - old_set:
+                    try:
+                        ws_app_global.send(json.dumps({'type': 'subscribe', 'symbol': t}))
+                    except Exception:
+                        pass
+            
+            active_watch_list = new_list
+            for t in new_list:
+                if t not in history_data:
+                    history_data[t] = deque()
+                    last_alert_time[t] = 0
 
 # ==================== [웹소켓 실시간 감시 엔진] ====================
 def on_message(ws, message):
@@ -246,6 +273,8 @@ def on_message(ws, message):
         print(f"메시지 처리 중 에러: {e}")
 
 def on_open(ws):
+    global ws_app_global
+    ws_app_global = ws
     print(f"⚡ 실시간 웹소켓 감시 시작완료!")
     with watchlist_lock:
         current_list = list(active_watch_list)
@@ -284,8 +313,10 @@ def run_dummy_server():
 if __name__ == "__main__":
     print("🚀 퀀트 모니터링 시스템 부팅 중...")
     
+    # 1. 렌더 생존용 서버 구동
     threading.Thread(target=run_dummy_server, daemon=True).start()
     
+    # 2. 첫 와치리스트 초기 수집
     initial_list = fetch_smart_watchlist()
     with watchlist_lock:
         active_watch_list = initial_list
@@ -293,4 +324,8 @@ if __name__ == "__main__":
             history_data[t] = deque()
             last_alert_time[t] = 0
 
+    # 3. 매일 자동 갱신 스케줄러 백그라운드 쓰레드 구동
+    threading.Thread(target=daily_watchlist_scheduler, daemon=True).start()
+
+    # 4. 메인 웹소켓 실행
     run_websocket()
